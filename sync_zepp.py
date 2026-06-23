@@ -8,14 +8,13 @@ from datetime import datetime
 # SSL 경고 숨기기
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 환경 변수 로드
-ZEPP_EMAIL = os.environ.get("ZEPP_EMAIL")
-ZEPP_PASSWORD = os.environ.get("ZEPP_PASSWORD")
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+# 환경 변수를 가져오면서 앞뒤 공백/줄바꿈(\n)을 강제로 제거(.strip())
+ZEPP_EMAIL = os.environ.get("ZEPP_EMAIL", "").strip()
+ZEPP_PASSWORD = os.environ.get("ZEPP_PASSWORD", "").strip()
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 
 def login_request(url, password_value):
-    """공통 로그인 요청 엔진"""
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Zepp/7.7.5",
         "Content-Type": "application/x-www-form-urlencoded"
@@ -35,8 +34,9 @@ def login_request(url, password_value):
     return requests.post(url, headers=headers, data=payload, verify=False)
 
 def get_zepp_tokens():
-    """진짜 살아있는 Zepp 서버 노드들을 순회하며 로그인 쟁취"""
-    # 현재 작동하는 Zepp 정식 실시간 서버 리스트
+    # 보안을 위해 글자는 숨기고 '실제 인식된 글자 수'만 로그에 출력하여 오타 검증
+    print(f"📊 [보안 진단] 인식된 이메일 글자수: {len(ZEPP_EMAIL)}자리 / 비밀번호 글자수: {len(ZEPP_PASSWORD)}자리")
+    
     target_urls = [
         "https://api-user.huami.com/v2/client/login",
         "https://account.huami.com/v2/client/login"
@@ -45,17 +45,15 @@ def get_zepp_tokens():
     last_error = ""
     for url in target_urls:
         try:
-            print(f"🔑 [접속 시도] {url} 노드 연결 중...")
-            # 1안: 일반 평문 패스워드 시도
+            print(f"🔑 [접속 시도] {url}")
+            # 1안: 평문 시도
             res = login_request(url, ZEPP_PASSWORD)
             
-            # 2안: 평문 거절 시 MD5 암호화 패스워드로 재시도
+            # 2안: 구형 규격용 MD5 암호화 시도
             if res.status_code != 200:
-                print("   ↳ ⚠️ 평문 방식 거절됨. MD5 암호화 방식으로 전환 시도...")
                 md5_password = hashlib.md5(ZEPP_PASSWORD.encode()).hexdigest()
                 res = login_request(url, md5_password)
                 
-            # 로그인 최종 성공 시 토큰 반환
             if res.status_code == 200 and "token_info" in res.json():
                 print("✅ Zepp 로그인 인증 최종 성공!")
                 return res.json()["token_info"]["access_token"], res.json()["token_info"]["user_id"]
@@ -65,10 +63,9 @@ def get_zepp_tokens():
             last_error = str(e)
             continue
             
-    raise Exception(f"모든 Zepp 서버 노드가 거절했습니다. 최종 사유: {last_error}")
+    raise Exception(f"인증 실패. 최종 사유: {last_error}")
 
 def fetch_real_health_data(token, user_id):
-    """실제 젭 클라우드 데이터 추출"""
     print("🏃 실시간 데이터 패치 중...")
     base_url = "https://api-analytics.huami.com"
     headers = {
@@ -108,7 +105,6 @@ def fetch_real_health_data(token, user_id):
     }
 
 def save_to_supabase(data):
-    """Supabase 적재"""
     target_url = f"{SUPABASE_URL}/rest/v1/zepp_health_data"
     headers = {
         "apikey": SUPABASE_KEY,
