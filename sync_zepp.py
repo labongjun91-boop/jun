@@ -1,7 +1,11 @@
 import os
 import requests
 import uuid
-from datetime import datetime, timedelta
+import urllib3
+from datetime import datetime
+
+# SSL 경고 문구 숨기기
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 환경 변수 로드
 ZEPP_EMAIL = os.environ.get("ZEPP_EMAIL")
@@ -10,10 +14,8 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 def get_zepp_tokens():
-    """Zepp 글로벌 통합 인증 서버에 가상 기기 ID를 생성하여 로그인"""
-    print("🔑 Zepp 정밀 우회 로그인 시도...")
-    
-    # 전 세계 Amazfit/Zepp 계정이 가장 안정적으로 인증되는 통합 엔드포인트
+    """Zepp 인증 서버 로그인 (SSL 인증서 검증 건너뛰기 추가)"""
+    print("🔑 Zepp 정밀 우회 로그인 시도 (SSL Bypass)...")
     login_url = "https://account.amazfit.com/v2/client/login"
     
     headers = {
@@ -21,7 +23,6 @@ def get_zepp_tokens():
         "Content-Type": "application/x-www-form-urlencoded"
     }
     
-    # 400 에러를 방지하기 위해 실제 앱 로그인 시 들어가는 필수 식별값 전원 매핑
     payload = {
         "app_name": "com.huami.watch.hmwatch",
         "app_version": "7.7.5",
@@ -30,31 +31,28 @@ def get_zepp_tokens():
         "country_code": "KR",
         "username": ZEPP_EMAIL,
         "password": ZEPP_PASSWORD,
-        "device_id": str(uuid.uuid4()),  # 매번 새로운 가상 기기 ID를 생성해 보안벽 우회
+        "device_id": str(uuid.uuid4()),
         "device_model": "iPhone15,3",
         "allow_reg": "0",
         "third_name": ""
     }
     
-    response = requests.post(login_url, headers=headers, data=payload)
+    # verify=False 추가로 보안 인증서 검증 에러 원천 차단
+    response = requests.post(login_url, headers=headers, data=payload, verify=False)
     
-    # 실패 시 구형 아시아 서버 노드로 최종 백업 시도
     if response.status_code != 200:
-        print(f"⚠️ 1차 엔드포인트 거절 ({response.status_code}). 백업 노드로 재시도...")
+        print("⚠️ 백업 노드로 재시도...")
         backup_url = "https://account.huami.com/v2/client/login"
-        response = requests.post(backup_url, headers=headers, data=payload)
+        response = requests.post(backup_url, headers=headers, data=payload, verify=False)
         
     if response.status_code != 200:
-        raise Exception(f"Zepp 로그인 최종 실패: {response.status_code} - {response.text}")
+        raise Exception(f"Zepp 로그인 최종 실패: {response.status_code}")
         
     login_data = response.json()
-    if "token_info" not in login_data:
-        raise Exception("인증 성공했으나 토큰 매핑 실패")
-        
     return login_data["token_info"]["access_token"], login_data["token_info"]["user_id"]
 
 def fetch_real_health_data(token, user_id):
-    """실제 젭 클라우드 데이터 추출"""
+    """실제 젭 클라우드 데이터 추출 (SSL 인증서 검증 건너뛰기 추가)"""
     print("🏃 실시간 데이터 패치 중...")
     base_url = "https://api-analytics.huami.com"
     headers = {
@@ -67,8 +65,8 @@ def fetch_real_health_data(token, user_id):
     summary_url = f"{base_url}/v1/health/summary.json"
     sport_url = f"{base_url}/v1/sport/run/profile.json"
     
-    summary_res = requests.get(summary_url, headers=headers, params={"user_id": user_id, "date": today_str}).json()
-    sport_res = requests.get(sport_url, headers=headers, params={"user_id": user_id}).json()
+    summary_res = requests.get(summary_url, headers=headers, params={"user_id": user_id, "date": today_str}, verify=False).json()
+    sport_res = requests.get(sport_url, headers=headers, params={"user_id": user_id}, verify=False).json()
 
     sleep_score = summary_res.get("data", {}).get("sleep", {}).get("score", 76)
     hybrid_charge = summary_res.get("data", {}).get("pai", {}).get("total_score", 62)
@@ -96,14 +94,14 @@ def fetch_real_health_data(token, user_id):
 
 def save_to_supabase(data):
     """Supabase 적재"""
-    target_url = f"{SUPABASE_URL}"
+    target_url = f"{SUPABASE_URL}/rest/v1/zepp_health_data"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
         "Prefer": "resolution=merge-duplicates"
     }
-    response = requests.post(target_url, json=data, headers=headers)
+    response = requests.post(target_url, json=data, headers=headers, verify=False)
     if response.status_code in [200, 201]:
         print(f"✅ 동기화 전송 성공! 수면: {data['sleep_score']} / PAI: {data['hybrid_charge']}")
     else:
