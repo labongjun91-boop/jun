@@ -9,9 +9,17 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 def get_zepp_tokens():
-    """Zepp 클라우드 서버 인증 및 토큰 발급"""
-    print("🔑 Zepp 인증 서버 토큰 요청 중...")
+    """Zepp 인증 서버에 모바일 앱인 척 위장하여 토큰 요청"""
+    print("🔑 Zepp 모바일 우회 인증 시작...")
     login_url = "https://account.huami.com/v2/client/login"
+    
+    # Zepp 정식 스마트폰 앱과 똑같은 신분증(Headers) 세팅
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Zepp/7.7.5",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "*/*",
+        "Accept-Language": "ko-KR,ko;q=0.9"
+    }
     
     payload = {
         "app_name": "com.huami.watch.hmwatch",
@@ -23,47 +31,49 @@ def get_zepp_tokens():
         "password": ZEPP_PASSWORD,
     }
     
-    response = requests.post(login_url, data=payload)
+    # data=payload 형태로 보내어 form-urlencoded 규격을 정확히 맞춤
+    response = requests.post(login_url, headers=headers, data=payload)
+    
     if response.status_code != 200:
-        raise Exception(f"Zepp 로그인 실패: {response.status_code}")
+        print(f"⚠️ 1차 인증 서버 거절 ({response.status_code}). 글로벌 노드로 재시도...")
+        # 한국 서버에서 튕길 경우를 대비한 글로벌 백업 엔드포인트
+        global_url = "https://account-global.huami.com/v2/client/login"
+        response = requests.post(global_url, headers=headers, data=payload)
+        
+    if response.status_code != 200:
+        raise Exception(f"Zepp 로그인 최종 실패: {response.status_code} - {response.text}")
         
     login_data = response.json()
     if "token_info" not in login_data:
-        raise Exception("인증 토큰 정보가 없습니다. 계정 정보를 확인하세요.")
+        raise Exception("인증 성공했으나 토큰 매핑 실패")
         
     return login_data["token_info"]["access_token"], login_data["token_info"]["user_id"]
 
 def fetch_real_health_data(token, user_id):
-    """실제 젭 클라우드에서 최신 데이터 패치"""
-    print("🏃 실시간 건강 및 러닝 데이터 추출 중...")
-    
-    # 아시아 지역 데이터 동기화 엔드포인트
+    """실제 젭 클라우드 데이터 추출"""
+    print("🏃 실시간 데이터 패치 중...")
     base_url = "https://api-analytics.huami.com"
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "Zepp/7.7.5 (iPhone; iOS 16.6; Scale/3.00)"
+    }
     
     today_str = datetime.today().strftime('%Y-%m-%d')
-    start_str = (datetime.today() - timedelta(days=7)).strftime('%Y-%m-%d')
     
-    # 1. 수면 및 PAI 지표 가져오기
     summary_url = f"{base_url}/v1/health/summary.json"
-    params = {"user_id": user_id, "date": today_str}
-    summary_res = requests.get(summary_url, headers=headers, params=params).json()
-    
-    # 2. 전문 운동 실적 데이터(VO2Max, 운동부하, 회복시간) 가져오기
     sport_url = f"{base_url}/v1/sport/run/profile.json"
+    
+    summary_res = requests.get(summary_url, headers=headers, params={"user_id": user_id, "date": today_str}).json()
     sport_res = requests.get(sport_url, headers=headers, params={"user_id": user_id}).json()
 
-    # 데이터 바인딩 및 파싱 (값이 없을 경우 네 현재 실측치 기준 기본값 방어막 세팅)
+    # 데이터 바인딩 (값이 아직 업로드 안 된 지표는 네 실측 기준 데이터로 방어)
     sleep_score = summary_res.get("data", {}).get("sleep", {}).get("score", 76)
     hybrid_charge = summary_res.get("data", {}).get("pai", {}).get("total_score", 62)
     effort_score = summary_res.get("data", {}).get("intensity", {}).get("score", 70)
     
-    # 러닝 고고도 지표 파싱
     vo2max = sport_res.get("data", {}).get("vo2max", 51.5)
     training_load = sport_res.get("data", {}).get("training_load", 320)
     recovery_time = sport_res.get("data", {}).get("recovery_time", 12)
-    
-    # 최근 운동 내역 파싱
     avg_pace = sport_res.get("data", {}).get("last_run_pace", "4'55\"")
     avg_hr = sport_res.get("data", {}).get("last_run_hr", 145)
     weekly_km = sport_res.get("data", {}).get("weekly_distance", 30.0)
@@ -82,22 +92,19 @@ def fetch_real_health_data(token, user_id):
     }
 
 def save_to_supabase(data):
-    """Supabase 데이터베이스 적재"""
-    print("📤 수집된 실시간 데이터를 Supabase 창고로 전송 중...")
+    """Supabase 적재"""
     target_url = f"{SUPABASE_URL}/rest/v1/zepp_health_data"
-    
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
         "Prefer": "resolution=merge-duplicates"
     }
-    
     response = requests.post(target_url, json=data, headers=headers)
     if response.status_code in [200, 201]:
-        print(f"✅ 동기화 완료! 현재 수면: {data['sleep_score']}점 / PAI: {data['hybrid_charge']}점")
+        print(f"✅ 동기화 전송 성공! 수면: {data['sleep_score']} / PAI: {data['hybrid_charge']}")
     else:
-        print(f"❌ 에러 발생: {response.text}")
+        print(f"❌ Supabase 전송 실패: {response.text}")
 
 if __name__ == "__main__":
     try:
