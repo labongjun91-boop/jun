@@ -8,13 +8,13 @@ from datetime import datetime
 # SSL 경고 숨기기
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 환경 변수를 가져오면서 앞뒤 공백/줄바꿈(\n)을 강제로 제거(.strip())
 ZEPP_EMAIL = os.environ.get("ZEPP_EMAIL", "").strip()
 ZEPP_PASSWORD = os.environ.get("ZEPP_PASSWORD", "").strip()
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 
-def login_request(url, password_value):
+def login_request(url, country, password_value):
+    """국가 코드를 동적으로 매핑하여 로그인 요청"""
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Zepp/7.7.5",
         "Content-Type": "application/x-www-form-urlencoded"
@@ -24,7 +24,7 @@ def login_request(url, password_value):
         "app_version": "7.7.5",
         "client_id": "HuaMi",
         "grant_type": "password",
-        "country_code": "KR",
+        "country_code": country, # 동적 국가 코드 적용
         "username": ZEPP_EMAIL,
         "password": password_value,
         "device_id": str(uuid.uuid4()),
@@ -34,36 +34,39 @@ def login_request(url, password_value):
     return requests.post(url, headers=headers, data=payload, verify=False)
 
 def get_zepp_tokens():
-    # 보안을 위해 글자는 숨기고 '실제 인식된 글자 수'만 로그에 출력하여 오타 검증
-    print(f"📊 [보안 진단] 인식된 이메일 글자수: {len(ZEPP_EMAIL)}자리 / 비밀번호 글자수: {len(ZEPP_PASSWORD)}자리")
-    
+    """살아있는 서버 노드와 다양한 국가 코드를 조합하여 계정 탐색"""
     target_urls = [
         "https://api-user.huami.com/v2/client/login",
         "https://account.huami.com/v2/client/login"
     ]
+    # 가입 시 지정되었을 가능성이 높은 주요 국가 코드 리스트
+    country_codes = ["KR", "US", "CN", "ALL"]
     
     last_error = ""
     for url in target_urls:
-        try:
-            print(f"🔑 [접속 시도] {url}")
-            # 1안: 평문 시도
-            res = login_request(url, ZEPP_PASSWORD)
-            
-            # 2안: 구형 규격용 MD5 암호화 시도
-            if res.status_code != 200:
-                md5_password = hashlib.md5(ZEPP_PASSWORD.encode()).hexdigest()
-                res = login_request(url, md5_password)
+        for country in country_codes:
+            try:
+                print(f"🔑 [서버: {url.split('//')[1].split('/')[0]} / 국가: {country}] 인증 시도 중...")
                 
-            if res.status_code == 200 and "token_info" in res.json():
-                print("✅ Zepp 로그인 인증 최종 성공!")
-                return res.json()["token_info"]["access_token"], res.json()["token_info"]["user_id"]
-            else:
-                last_error = f"{res.status_code} - {res.text}"
-        except Exception as e:
-            last_error = str(e)
-            continue
-            
-    raise Exception(f"인증 실패. 최종 사유: {last_error}")
+                # 1단계: 평문 비밀번호 테스트
+                res = login_request(url, country, ZEPP_PASSWORD)
+                
+                # 2단계: 실패 시 MD5 암호화 비밀번호 테스트
+                if res.status_code != 200:
+                    md5_password = hashlib.md5(ZEPP_PASSWORD.encode()).hexdigest()
+                    res = login_request(url, country, md5_password)
+                    
+                # 로그인 최종 성공 시 토큰 반환하고 즉시 종료
+                if res.status_code == 200 and "token_info" in res.json():
+                    print(f"🎉 계정 발견! [{country}] 구역에서 인증에 성공했습니다.")
+                    return res.json()["token_info"]["access_token"], res.json()["token_info"]["user_id"]
+                else:
+                    last_error = f"{res.status_code} - {res.text}"
+            except Exception as e:
+                last_error = str(e)
+                continue
+                
+    raise Exception(f"모든 국가 구역에서 인증에 실패했습니다. 최종 사유: {last_error}")
 
 def fetch_real_health_data(token, user_id):
     print("🏃 실시간 데이터 패치 중...")
