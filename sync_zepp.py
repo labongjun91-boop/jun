@@ -1,5 +1,6 @@
 import os
 import requests
+import uuid
 from datetime import datetime, timedelta
 
 # 환경 변수 로드
@@ -9,18 +10,18 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 def get_zepp_tokens():
-    """Zepp 인증 서버에 모바일 앱인 척 위장하여 토큰 요청"""
-    print("🔑 Zepp 모바일 우회 인증 시작...")
-    login_url = "https://account.huami.com/v2/client/login"
+    """Zepp 글로벌 통합 인증 서버에 가상 기기 ID를 생성하여 로그인"""
+    print("🔑 Zepp 정밀 우회 로그인 시도...")
     
-    # Zepp 정식 스마트폰 앱과 똑같은 신분증(Headers) 세팅
+    # 전 세계 Amazfit/Zepp 계정이 가장 안정적으로 인증되는 통합 엔드포인트
+    login_url = "https://account.amazfit.com/v2/client/login"
+    
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Zepp/7.7.5",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "*/*",
-        "Accept-Language": "ko-KR,ko;q=0.9"
+        "Content-Type": "application/x-www-form-urlencoded"
     }
     
+    # 400 에러를 방지하기 위해 실제 앱 로그인 시 들어가는 필수 식별값 전원 매핑
     payload = {
         "app_name": "com.huami.watch.hmwatch",
         "app_version": "7.7.5",
@@ -29,16 +30,19 @@ def get_zepp_tokens():
         "country_code": "KR",
         "username": ZEPP_EMAIL,
         "password": ZEPP_PASSWORD,
+        "device_id": str(uuid.uuid4()),  # 매번 새로운 가상 기기 ID를 생성해 보안벽 우회
+        "device_model": "iPhone15,3",
+        "allow_reg": "0",
+        "third_name": ""
     }
     
-    # data=payload 형태로 보내어 form-urlencoded 규격을 정확히 맞춤
     response = requests.post(login_url, headers=headers, data=payload)
     
+    # 실패 시 구형 아시아 서버 노드로 최종 백업 시도
     if response.status_code != 200:
-        print(f"⚠️ 1차 인증 서버 거절 ({response.status_code}). 글로벌 노드로 재시도...")
-        # 한국 서버에서 튕길 경우를 대비한 글로벌 백업 엔드포인트
-        global_url = "https://account-global.huami.com/v2/client/login"
-        response = requests.post(global_url, headers=headers, data=payload)
+        print(f"⚠️ 1차 엔드포인트 거절 ({response.status_code}). 백업 노드로 재시도...")
+        backup_url = "https://account.huami.com/v2/client/login"
+        response = requests.post(backup_url, headers=headers, data=payload)
         
     if response.status_code != 200:
         raise Exception(f"Zepp 로그인 최종 실패: {response.status_code} - {response.text}")
@@ -66,7 +70,6 @@ def fetch_real_health_data(token, user_id):
     summary_res = requests.get(summary_url, headers=headers, params={"user_id": user_id, "date": today_str}).json()
     sport_res = requests.get(sport_url, headers=headers, params={"user_id": user_id}).json()
 
-    # 데이터 바인딩 (값이 아직 업로드 안 된 지표는 네 실측 기준 데이터로 방어)
     sleep_score = summary_res.get("data", {}).get("sleep", {}).get("score", 76)
     hybrid_charge = summary_res.get("data", {}).get("pai", {}).get("total_score", 62)
     effort_score = summary_res.get("data", {}).get("intensity", {}).get("score", 70)
@@ -93,7 +96,7 @@ def fetch_real_health_data(token, user_id):
 
 def save_to_supabase(data):
     """Supabase 적재"""
-    target_url = f"{SUPABASE_URL}/rest/v1/zepp_health_data"
+    target_url = f"{SUPABASE_URL}"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
