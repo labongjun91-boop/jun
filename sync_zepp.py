@@ -2,27 +2,24 @@ import os
 import requests
 import uuid
 import urllib3
+import hashlib
 from datetime import datetime
 
-# SSL 경고 문구 숨기기
+# SSL 경고 끄기
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 환경 변수 로드
 ZEPP_EMAIL = os.environ.get("ZEPP_EMAIL")
 ZEPP_PASSWORD = os.environ.get("ZEPP_PASSWORD")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-def get_zepp_tokens():
-    """Zepp 인증 서버 로그인 (SSL 인증서 검증 건너뛰기 추가)"""
-    print("🔑 Zepp 정밀 우회 로그인 시도 (SSL Bypass)...")
+def login_request(password_value):
+    """공통 로그인 요청 함수"""
     login_url = "https://account.amazfit.com/v2/client/login"
-    
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Zepp/7.7.5",
         "Content-Type": "application/x-www-form-urlencoded"
     }
-    
     payload = {
         "app_name": "com.huami.watch.hmwatch",
         "app_version": "7.7.5",
@@ -30,29 +27,31 @@ def get_zepp_tokens():
         "grant_type": "password",
         "country_code": "KR",
         "username": ZEPP_EMAIL,
-        "password": ZEPP_PASSWORD,
+        "password": password_value,
         "device_id": str(uuid.uuid4()),
         "device_model": "iPhone15,3",
-        "allow_reg": "0",
-        "third_name": ""
+        "allow_reg": "0"
     }
+    return requests.post(login_url, headers=headers, data=payload, verify=False)
+
+def get_zepp_tokens():
+    print("🔑 [1단계] 일반 평문 비밀번호로 로그인 시도...")
+    res = login_request(ZEPP_PASSWORD)
     
-    # verify=False 추가로 보안 인증서 검증 에러 원천 차단
-    response = requests.post(login_url, headers=headers, data=payload, verify=False)
-    
-    if response.status_code != 200:
-        print("⚠️ 백업 노드로 재시도...")
-        backup_url = "https://account.huami.com/v2/client/login"
-        response = requests.post(backup_url, headers=headers, data=payload, verify=False)
+    if res.status_code != 200:
+        print("⚠️ 평문 로그인 거절됨. [2단계] MD5 암호화 방식으로 재시도...")
+        # 비밀번호를 Zepp 보안 규격(MD5 16진수)으로 변환
+        md5_password = hashlib.md5(ZEPP_PASSWORD.encode()).hexdigest()
+        res = login_request(md5_password)
         
-    if response.status_code != 200:
-        raise Exception(f"Zepp 로그인 최종 실패: {response.status_code}")
+    if res.status_code != 200:
+        # 실패할 경우 서버가 뱉은 진짜 이유(텍스트)를 강제로 출력하여 진단
+        raise Exception(f"Zepp 서버 거절 사유: {res.status_code} - {res.text}")
         
-    login_data = response.json()
-    return login_data["token_info"]["access_token"], login_data["token_info"]["user_id"]
+    print("✅ Zepp 로그인 인증 성공!")
+    return res.json()["token_info"]["access_token"], res.json()["token_info"]["user_id"]
 
 def fetch_real_health_data(token, user_id):
-    """실제 젭 클라우드 데이터 추출 (SSL 인증서 검증 건너뛰기 추가)"""
     print("🏃 실시간 데이터 패치 중...")
     base_url = "https://api-analytics.huami.com"
     headers = {
@@ -61,7 +60,6 @@ def fetch_real_health_data(token, user_id):
     }
     
     today_str = datetime.today().strftime('%Y-%m-%d')
-    
     summary_url = f"{base_url}/v1/health/summary.json"
     sport_url = f"{base_url}/v1/sport/run/profile.json"
     
@@ -93,7 +91,6 @@ def fetch_real_health_data(token, user_id):
     }
 
 def save_to_supabase(data):
-    """Supabase 적재"""
     target_url = f"{SUPABASE_URL}/rest/v1/zepp_health_data"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -103,7 +100,7 @@ def save_to_supabase(data):
     }
     response = requests.post(target_url, json=data, headers=headers, verify=False)
     if response.status_code in [200, 201]:
-        print(f"✅ 동기화 전송 성공! 수면: {data['sleep_score']} / PAI: {data['hybrid_charge']}")
+        print(f"✅ Supabase 전송 완료! 수면: {data['sleep_score']} / PAI: {data['hybrid_charge']}")
     else:
         print(f"❌ Supabase 전송 실패: {response.text}")
 
