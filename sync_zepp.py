@@ -2,85 +2,58 @@ import os
 import requests
 import uuid
 import urllib3
-import re
+import hashlib
 from datetime import datetime
 
 # SSL 경고 숨기기
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 환경 변수 로드
+# 환경 변수 자동 공백 제거 로드
 ZEPP_EMAIL = os.environ.get("ZEPP_EMAIL", "").strip()
 ZEPP_PASSWORD = os.environ.get("ZEPP_PASSWORD", "").strip()
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 
 def get_zepp_tokens():
-    print("🔐 Zepp 정식 2단계 OAuth 인증 절차를 시작합니다...")
+    print("🔑 클라우드 IP 차단 우회 다이렉트 로그인 시도...")
     
-    # [1단계] 임시 인증 코드(access_code) 발급 요청
-    url1 = f"https://api-user.huami.com/registrations/{ZEPP_EMAIL}/tokens"
+    # 캡차 인증을 요구하지 않는 모바일 앱 전용 다이렉트 로그인 주소
+    login_url = "https://api-user.huami.com/v2/client/login"
     
-    headers1 = {
-        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-        "User-Agent": "Zepp/7.7.5 (iPhone; iOS 16.6; Scale/2.00)"
-    }
-    
-    data1 = {
-        "emailOrPhone": ZEPP_EMAIL,
-        "password": ZEPP_PASSWORD,
-        "state": "REDIRECTION",
-        "client_id": "HuaMi",
-        "country_code": "KR",
-        "token": "access",
-        "redirect_uri": "https://s3-us-west-2.amazonaws.com/hm-registration/successsignin.html"
-    }
-    
-    # 리다이렉트 주소에서 코드를 직접 가로채야 하므로 allow_redirects=False 설정
-    res1 = requests.post(url1, data=data1, headers=headers1, allow_redirects=False, verify=False)
-    
-    location = res1.headers.get("Location")
-    if not location:
-        raise Exception(f"1단계 인증 코드 발급 실패 (양식 오류): {res1.status_code} - {res1.text}")
-        
-    print("🎯 1단계 인증 주소 획득 완료, access_code 추출 중...")
-    
-    # 리다이렉트 주소에서 access_code 값 추출
-    access_code_match = re.search(r"access=([^&]+)", location)
-    if not access_code_match:
-        raise Exception(f"리다이렉트 주소 내 토큰 파싱 실패: {location}")
-        
-    access_code = access_code_match.group(1)
-    
-    # [2단계] 가로챈 access_code를 진짜 로그인 토큰과 맞교환
-    url2 = "https://account.huami.com/v2/client/login"
-    
-    headers2 = {
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Zepp/7.7.5",
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Zepp/7.7.5"
+        "Accept": "*/*"
     }
     
-    data2 = {
+    # 400 및 429 에러를 방지하기 위한 정식 모바일 앱 필수 파라미터 셋업
+    payload = {
         "app_name": "com.huami.watch.hmwatch",
         "app_version": "7.7.5",
         "client_id": "HuaMi",
-        "code": access_code,
+        "grant_type": "password",
         "country_code": "KR",
-        "grant_type": "access_token",  # 패스워드가 아닌 토큰 교환 방식으로 명시
+        "username": ZEPP_EMAIL,
+        "password": ZEPP_PASSWORD,
         "device_id": str(uuid.uuid4()),
         "device_model": "iPhone15,3",
         "allow_reg": "0"
     }
     
-    res2 = requests.post(url2, headers=headers2, data=data2, verify=False)
-    if res2.status_code != 200:
-        raise Exception(f"2단계 토큰 교환 실패: {res2.status_code} - {res2.text}")
+    # 1차 시도: 평문 패스워드 전송
+    res = requests.post(login_url, headers=headers, data=payload, verify=False)
+    
+    # 2차 시도: 거절 시 구형 계정용 MD5 암호화 패스워드로 재시도
+    if res.status_code != 200:
+        print("   ↳ ⚠️ 평문 방식 거절됨. MD5 규격으로 전환하여 재시도...")
+        payload["password"] = hashlib.md5(ZEPP_PASSWORD.encode()).hexdigest()
+        res = requests.post(login_url, headers=headers, data=payload, verify=False)
         
-    login_data = res2.json()
-    if "token_info" not in login_data:
-        raise Exception("로그인 성공했으나 유효 토큰이 반환되지 않았습니다.")
+    if res.status_code == 200 and "token_info" in res.json():
+        print("✅ Zepp 보안망 우회 로그인 성공!")
+        return res.json()["token_info"]["access_token"], res.json()["token_info"]["user_id"]
         
-    print("✅ Zepp 2단계 OAuth 로그인 최종 성공!")
-    return login_data["token_info"]["access_token"], login_data["token_info"]["user_id"]
+    raise Exception(f"로그인 최종 실패: {res.status_code} - {res.text}")
 
 def fetch_real_health_data(token, user_id):
     print("🏃 실시간 데이터 패치 중...")
